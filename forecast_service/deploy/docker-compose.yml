@@ -1,0 +1,25 @@
+services:
+  kronos:
+    build:
+      context: ../..
+      dockerfile: forecast_service/Dockerfile
+    restart: unless-stopped
+    environment:
+      KRONOS_SECRET: ${KRONOS_SECRET}
+      KRONOS_MODEL: ${KRONOS_MODEL:-NeoQuasar/Kronos-small}
+      HF_HOME: /hf
+    volumes:
+      - hf-cache:/hf
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [kronos]
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+volumes:
+  hf-cache:
+  caddy-data:
