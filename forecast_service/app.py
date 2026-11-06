@@ -27,7 +27,10 @@ LOOKBACK = min(400, MAX_CONTEXT)
 
 app = FastAPI(title="Kronos forecast service")
 _predictor = None
-_lock = threading.Lock()
+_lock = threading.Lock()  # guards loading the model
+# Kronos keeps working data inside the model (its rotary-position cache), so two forecasts running at the
+# same time overwrite each other and crash with "size of tensor a must match tensor b". One at a time only.
+_infer_lock = threading.Lock()
 
 
 def get_predictor():
@@ -95,6 +98,19 @@ def tp_before_sl(paths, levels: Levels):
     }
 
 
+def _preload():
+    """Load the model in the background at start-up so the first forecast does not wait for it."""
+    try:
+        get_predictor()
+        print("Kronos model loaded and ready.", flush=True)
+    except Exception as exc:  # the first forecast will try again and report the error
+        print(f"Kronos preload failed: {exc}", flush=True)
+
+
+if os.getenv("KRONOS_PRELOAD", "1") == "1":
+    threading.Thread(target=_preload, daemon=True).start()
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "model": MODEL_ID, "loaded": _predictor is not None}
@@ -121,17 +137,22 @@ def forecast(req: ForecastRequest, x_api_key: Optional[str] = Header(default=Non
         ["open", "high", "low", "close"]
     ]
 
-    predictor = get_predictor()
-    outs = predictor.predict_batch(
-        df_list=[frame] * req.paths,
-        x_timestamp_list=[x_ts] * req.paths,
-        y_timestamp_list=[y_ts] * req.paths,
-        pred_len=req.pred_len,
-        T=req.temperature,
-        top_p=req.top_p,
-        sample_count=1,
-        verbose=False,
-    )
+    if not _infer_lock.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="busy: still working on another forecast")
+    try:
+        predictor = get_predictor()
+        outs = predictor.predict_batch(
+            df_list=[frame] * req.paths,
+            x_timestamp_list=[x_ts] * req.paths,
+            y_timestamp_list=[y_ts] * req.paths,
+            pred_len=req.pred_len,
+            T=req.temperature,
+            top_p=req.top_p,
+            sample_count=1,
+            verbose=False,
+        )
+    finally:
+        _infer_lock.release()
 
     paths = []
     for out in outs:
