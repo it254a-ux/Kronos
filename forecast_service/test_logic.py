@@ -38,4 +38,37 @@ th = [threading.Thread(target=go) for _ in range(2)]
 [x.start() for x in th]; [x.join() for x in th]
 assert sorted(codes) == [200, 429], codes
 assert c.post("/forecast", json={"candles": cs, "pred_len": 5, "paths": 2}).status_code == 200  # free again afterwards
+
+# jobs: start now, collect later; one at a time
+svc._predictor = Slow()
+body = {"candles": cs, "pred_len": 5, "paths": 2, "levels": {"side": "sell", "tp": cs[-1]["c"] - 3, "sl": cs[-1]["c"] + 3}}
+r = c.post("/jobs", json=body); assert r.status_code == 200, r.text
+job = r.json()["job"]
+assert c.post("/jobs", json=body).status_code == 429          # still running
+assert c.get(f"/jobs/{job}").json()["status"] == "running"
+for _ in range(50):
+    st = c.get(f"/jobs/{job}").json()
+    if st["status"] != "running": break
+    time.sleep(0.1)
+assert st["status"] == "done" and len(st["result"]["paths"]) == 2 and "levels" in st["result"], st
+assert c.post("/jobs", json=body).status_code == 200           # free again once finished
+time.sleep(1)
+assert c.get("/jobs/not-a-real-id").status_code == 404
+assert c.get("/jobs/" + "0" * 32).status_code == 404
+svc.SECRET = "k"
+assert c.post("/jobs", json=body).status_code == 401
+assert c.get(f"/jobs/{job}").status_code == 401
+assert c.get(f"/jobs/{job}", headers={"X-API-Key": "k"}).status_code == 200
+svc.SECRET = ""
+
+# a model that crashes gives the person a plain message, not the details
+class Boom:
+    def predict_batch(self, *a, **k): raise RuntimeError("secret internal detail")
+svc._predictor = Boom()
+job = c.post("/jobs", json=body).json()["job"]
+for _ in range(50):
+    st = c.get(f"/jobs/{job}").json()
+    if st["status"] != "running": break
+    time.sleep(0.1)
+assert st["status"] == "error" and "secret" not in str(st), st
 print("ok", j["levels"], j["up_share"], codes)
