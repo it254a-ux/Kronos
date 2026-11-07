@@ -7,6 +7,8 @@ Needs a Modal secret named "kronos-secret" holding KRONOS_SECRET (see forecast_s
 How it behaves on Modal:
 - It sleeps when nobody uses it (Modal bills per second, nothing while asleep), so the first forecast after a quiet
   spell waits for the container and model to start. The weights are baked into the image, so there is no download.
+- It goes back to sleep 60 s after the last request, to make the free credit last (a forecast keeps it awake while the
+  page checks on it). Without a payment method Modal gives only $1 of credit a month; with one, $30.
 - Exactly one container runs (max_containers=1), because forecasts are kept in that container's memory and the model
   runs one forecast at a time. Several requests can reach it together (polling while it computes).
 """
@@ -57,7 +59,7 @@ image = (
 app = modal.App("kronos-forecast", image=image, secrets=[modal.Secret.from_name("kronos-secret")])
 
 
-@app.function(cpu=4.0, memory=8192, max_containers=1, scaledown_window=180, timeout=3600)
+@app.function(cpu=4.0, memory=4096, max_containers=1, scaledown_window=60, timeout=3600)
 @modal.concurrent(max_inputs=16)
 @modal.asgi_app()
 def web():
